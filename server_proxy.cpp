@@ -44,13 +44,13 @@ void *thread_client(void *arg_) {
     int cfd = arg->cfd;
 
     int remote = 0;
-    printf("thread_client tid %d, cfd %d\n", gettid(), cfd);
+    printf("proxy listen thread started tid %d, cfd %d\n", gettid(), cfd);
     bzero(buffer, sizeof(buffer));
     int total = 0;
-    if ((total = recv(cfd, buffer, sizeof(buffer), 0)) > 0) {
+    if ((total = recv(cfd, buffer, 128, 0)) > 0) {
         struct protocol* pro = (struct protocol*) buffer;
         if (!strncmp(pro->magic, "##**##**55", 10)) {
-            printf("cfd %d 接收到客户端连接请求: %d, %d, %d, %s\n", cfd, total, pro->port, pro->iplen, &buffer[sizeof(struct protocol)]);
+            printf("接收到客户端 cfd %d 连接请求: %d, %d, %d, %s\n", cfd, total, pro->port, pro->iplen, &buffer[sizeof(struct protocol)]);
             remote = create_remote_socket(pro->port, &buffer[sizeof(struct protocol)]);
             if (remote <= 0) {
                 printf("remote server is not running.");
@@ -58,6 +58,12 @@ void *thread_client(void *arg_) {
                 return;
             }
         }
+    } else if (total == 0) {
+        printf("connect disconnected from client %d\n", cfd);
+    } else {
+        printf("recv client addr and port error: %s(errno: %d)\n", strerror(errno), errno);
+        close_fd_safety(cfd);
+        return;
     }
 
     // 创建epoll
@@ -79,10 +85,14 @@ void *thread_client(void *arg_) {
     while (1) {
         nfds = epoll_wait(epfd, events, MAXFDS, 2000);
         if (nfds > 0) {
-            printf("epoll_wait respond nfds %d %d\n", nfds, events[0].data.fd);
+            printf("epoll_wait respond nfds %d %d------\n", nfds, events[0].data.fd);
         }
         for (int i = 0; i < nfds; i++) {
             if (events[i].events == EPOLLIN) {
+                bool from_client = false;
+                if (events[i].data.fd == cfd) {
+                    from_client = true;
+                }
                 bzero(buffer, sizeof(buffer));
                 int len = recv(events[i].data.fd, buffer, sizeof(buffer), 0);
                 if (len == 0) {
@@ -91,15 +101,26 @@ void *thread_client(void *arg_) {
                     break;
                 } else if (len < 0) {
                     printf("connect_fd recv error: %s(errno: %d)\n", strerror(errno), errno);
+                    continue;
                 } else {
-                    printf("cfd %d 接收到客户端的消息: %s\n", events[i].data.fd, (char *) buffer);
+                    if (from_client) {
+                        printf("read  fd %d client->proxy len: %d\n", events[i].data.fd, len);
+                    } else {
+                        printf("read  fd %d proxy->client len: %d\n", events[i].data.fd, len);
+                    }
                 }
                 int fd = cfd;
                 if (events[i].data.fd == cfd) {
                     fd = remote;
                 }
-                len = write(fd, buffer, len);
-                printf("write fd %d, %d\n", fd, len);
+                if (len > 0) {
+                    len = write(fd, buffer, len);
+                    if (from_client) {
+                        printf("write fd %d proxy->server len: %d\n", fd, len);
+                    } else {
+                        printf("write fd %d server->proxy len: %d\n", fd, len);
+                    }
+                }
                 // ev.data.fd = events[i].data.fd;
                 // ev.events = EPOLLOUT;
                 // epoll_ctl(epfd, EPOLL_CTL_MOD, events[i].data.fd, &ev);
