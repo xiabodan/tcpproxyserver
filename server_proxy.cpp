@@ -21,6 +21,8 @@
 #define EVENTS 10
 #define gettid() syscall(SYS_gettid)
 
+static bool debug = true;
+
 struct thread_arg {
     int cfd;
     void* caddr;
@@ -85,7 +87,7 @@ void *thread_client(void *arg_) {
     while (1) {
         nfds = epoll_wait(epfd, events, MAXFDS, 2000);
         if (nfds > 0) {
-            printf("epoll_wait respond nfds %d %d------\n", nfds, events[0].data.fd);
+            // printf("epoll_wait respond nfds %d %d------\n", nfds, events[0].data.fd);
         }
         for (int i = 0; i < nfds; i++) {
             if (events[i].events == EPOLLIN) {
@@ -104,9 +106,9 @@ void *thread_client(void *arg_) {
                     continue;
                 } else {
                     if (from_client) {
-                        printf("read  fd %d client->proxy len: %d\n", events[i].data.fd, len);
+                        if (debug) printf("read  fd %d client->proxy len: %d\n", events[i].data.fd, len);
                     } else {
-                        printf("read  fd %d proxy->client len: %d\n", events[i].data.fd, len);
+                        if (debug) printf("read  fd %d proxy->client len: %d\n", events[i].data.fd, len);
                     }
                 }
                 int fd = cfd;
@@ -116,9 +118,9 @@ void *thread_client(void *arg_) {
                 if (len > 0) {
                     len = write(fd, buffer, len);
                     if (from_client) {
-                        printf("write fd %d proxy->server len: %d\n", fd, len);
+                        if (debug) printf("write fd %d proxy->server len: %d\n", fd, len);
                     } else {
-                        printf("write fd %d server->proxy len: %d\n", fd, len);
+                        if (debug) printf("write fd %d server->proxy len: %d\n", fd, len);
                     }
                 }
                 // ev.data.fd = events[i].data.fd;
@@ -230,17 +232,45 @@ int main(int argc, char** argv) {
 
     printf("======waiting for client's request======\n");
     int len = sizeof(caddr);
+
+    // create proxy server accept epoll
+    int nfds;
+    struct epoll_event ev, ev2, events[EVENTS];
+    int epfd = epoll_create(MAXFDS);
+
+    setNonBlock(socket_fd);
+    ev.data.fd = socket_fd;
+    ev.events = EPOLLIN | EPOLLET;
+    epoll_ctl(epfd, EPOLL_CTL_ADD, socket_fd, &ev);
+
     while (1) {
-        int cfd = accept(socket_fd, (struct sockaddr *) &caddr, &len);
-        if (-1 == cfd) {
-            printf("服务器接收套接字的时候出问题了");
-            break;
+        nfds = epoll_wait(epfd, events, MAXFDS, -1);
+        // printf("epoll_wait socket_fd respond nfds %d\n", nfds);
+        for (int i = 0; i < nfds; ++i) {
+            if (socket_fd == events[i].data.fd) {
+                memset(&caddr, 0, sizeof(caddr) );
+                int cfd = accept(socket_fd, (struct sockaddr *) &caddr, &len);
+                if (-1 == cfd) {
+                    printf("proxy server accept error!");
+                    break;
+                }
+                struct thread_arg *arg = (struct thread_arg*) malloc(sizeof(struct thread_arg));
+                arg->cfd = cfd;
+                arg->caddr = &caddr;
+                pthread_t t_a;
+                pthread_create(&t_a, NULL, thread_client, arg);
+            }
         }
-        struct thread_arg *arg = (struct thread_arg*) malloc(sizeof(struct thread_arg));
-        arg->cfd = cfd;
-        arg->caddr = &caddr;
-        pthread_t t_a;
-        pthread_create(&t_a, NULL, thread_client, arg);
+        // int cfd = accept(socket_fd, (struct sockaddr *) &caddr, &len);
+        // if (-1 == cfd) {
+        //     printf("proxy server accept error!");
+        //     break;
+        // }
+        // struct thread_arg *arg = (struct thread_arg*) malloc(sizeof(struct thread_arg));
+        // arg->cfd = cfd;
+        // arg->caddr = &caddr;
+        // pthread_t t_a;
+        // pthread_create(&t_a, NULL, thread_client, arg);
     }
     close_fd_safety(socket_fd);
     return 0;
